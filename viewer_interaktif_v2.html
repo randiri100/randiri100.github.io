@@ -1,0 +1,91 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Kabinet Interaktif (v2)</title>
+  <style>body { margin:0; overflow:hidden; }</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<div style="position:absolute; top:10px; left:10px; background:#fff; padding:10px;">
+  <input id="explode" type="range" min="0" max="1" step="0.01" value="0">
+  <span>Explode: <span id="expval">0</span></span>
+</div>
+<script type="module">
+  import * as THREE from 'https://unpkg.com/three@0.149.0/build/three.module.js';
+  import { GLTFLoader } from 'https://unpkg.com/three@0.149.0/examples/jsm/loaders/GLTFLoader.js';
+  import { OrbitControls } from 'https://unpkg.com/three@0.149.0/examples/jsm/controls/OrbitControls.js';
+
+  const canvas = document.getElementById('canvas');
+  const renderer = new THREE.WebGLRenderer({canvas, antialias:true});
+  renderer.setSize(window.innerWidth, window.innerHeight);
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0xf0f0f0);
+
+  const camera = new THREE.PerspectiveCamera(50, window.innerWidth/window.innerHeight, 0.1, 1000);
+  camera.position.set(2,2,3);
+
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.enablePan = true;
+
+  scene.add(new THREE.AmbientLight(0x888888));
+  const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+  dirLight.position.set(5,10,7);
+  scene.add(dirLight);
+
+  const loader = new GLTFLoader();
+  let parts = [];
+  let originalPositions = [];
+
+  loader.load('model.glb', (gltf) => {
+    const model = gltf.scene;
+    model.traverse((child) => {
+      if (child.isMesh) {
+        parts.push(child);
+        originalPositions.push(child.position.clone());
+      }
+    });
+    scene.add(model);
+  });
+
+  const ray = new THREE.Raycaster();
+  const mouse = new THREE.Vector2();
+  window.addEventListener('click', (e) => {
+    mouse.x = (e.clientX/window.innerWidth)*2 -1;
+    mouse.y = -(e.clientY/window.innerHeight)*2 +1;
+    ray.setFromCamera(mouse, camera);
+    const hits = ray.intersectObjects(parts);
+    if (hits.length) {
+      const name = hits[0].object.name || hits[0].object.userData.name || 'Tidak diketahui';
+      alert('Klik: ' + name);
+    }
+  });
+
+  const slider = document.getElementById('explode');
+  const valText = document.getElementById('expval');
+  slider.oninput = () => {
+    const v = parseFloat(slider.value);
+    valText.textContent = v.toFixed(2);
+    parts.forEach((p, i) => {
+      const dir = originalPositions[i].clone().normalize();
+      p.position.copy(originalPositions[i]).add(dir.multiplyScalar(v * 0.5));
+    });
+  };
+
+  function animate() {
+    requestAnimationFrame(animate);
+    controls.update();
+    renderer.render(scene, camera);
+  }
+  animate();
+
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth/window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+</script>
+</body>
+</html>
