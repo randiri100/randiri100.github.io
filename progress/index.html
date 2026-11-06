@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Progress Tracker</title>
-  <meta name="description" content="Pantau progress pemasangan dari scan LiDAR dan foto kamera iPhone, dibandingkan dengan model rencana 3D." />
+  <title>Progress Fit-out</title>
+  <meta name="description" content="Pantau progress fit-out (mis. restoran di mall) dari scan LiDAR dan foto kamera iPhone, dibandingkan dengan model rencana 3D dan kurva S." />
   <meta name="theme-color" content="#f6f5f2" media="(prefers-color-scheme: light)" />
   <meta name="theme-color" content="#161615" media="(prefers-color-scheme: dark)" />
   <link rel="stylesheet" href="style.css" />
@@ -20,23 +20,25 @@
 <body>
   <header class="topbar">
     <div class="brand">
-      <h1 id="project-name">Progress Tracker</h1>
-      <p class="sub">Scan LiDAR + foto iPhone dibandingkan dengan model rencana <span id="plan-name"></span></p>
+      <h1 id="project-name">Fit-out Restoran</h1>
+      <p class="sub">Progress dari scan LiDAR + foto iPhone vs model rencana <span id="plan-name"></span></p>
     </div>
     <div class="top-actions">
       <button id="btn-add" class="btn primary" type="button">+ Tambah scan</button>
       <details class="menu">
         <summary class="btn" aria-label="Menu lainnya">Menu</summary>
         <div class="menu-list" role="menu">
-          <button type="button" data-action="demo" role="menuitem">Muat data demo</button>
+          <button type="button" data-action="demo" role="menuitem">Muat data demo (restoran)</button>
+          <hr />
+          <button type="button" data-action="plan" role="menuitem">Model rencana (SketchUp/Revit)…</button>
+          <button type="button" data-action="elements" role="menuitem">Pekerjaan &amp; bobot…</button>
+          <button type="button" data-action="schedule" role="menuitem">Jadwal rencana (kurva S)…</button>
           <button type="button" data-action="settings" role="menuitem">Pengaturan analisis…</button>
-          <button type="button" data-action="plan" role="menuitem">Ganti model rencana (GLB)…</button>
-          <button type="button" data-action="plan-reset" role="menuitem">Pakai model bawaan</button>
           <hr />
           <button type="button" data-action="export" role="menuitem">Ekspor proyek (.json)</button>
           <button type="button" data-action="import" role="menuitem">Impor proyek…</button>
           <button type="button" data-action="csv" role="menuitem">Ekspor tabel (.csv)</button>
-          <button type="button" data-action="print" role="menuitem">Cetak / simpan PDF</button>
+          <button type="button" data-action="print" role="menuitem">Cetak laporan / PDF</button>
           <hr />
           <button type="button" data-action="clear" role="menuitem" class="danger">Hapus semua scan</button>
         </div>
@@ -47,12 +49,17 @@
   <main class="layout">
     <section class="kpis" aria-label="Ringkasan">
       <div class="kpi">
-        <span class="kpi-label">Progress terakhir</span>
+        <span class="kpi-label">Progress aktual</span>
         <span class="kpi-value" id="kpi-progress">–</span>
         <span class="kpi-note" id="kpi-delta">&nbsp;</span>
       </div>
       <div class="kpi">
-        <span class="kpi-label">Elemen terpasang</span>
+        <span class="kpi-label">Deviasi vs rencana</span>
+        <span class="kpi-value" id="kpi-dev">–</span>
+        <span class="kpi-note" id="kpi-plan">&nbsp;</span>
+      </div>
+      <div class="kpi">
+        <span class="kpi-label">Pekerjaan selesai</span>
         <span class="kpi-value" id="kpi-done">–</span>
         <span class="kpi-note" id="kpi-partial">&nbsp;</span>
       </div>
@@ -60,11 +67,6 @@
         <span class="kpi-label">Scan terakhir</span>
         <span class="kpi-value kpi-date" id="kpi-last">–</span>
         <span class="kpi-note" id="kpi-count">&nbsp;</span>
-      </div>
-      <div class="kpi">
-        <span class="kpi-label">Foto lapangan</span>
-        <span class="kpi-value" id="kpi-photos">–</span>
-        <span class="kpi-note">dari kamera iPhone</span>
       </div>
     </section>
 
@@ -74,6 +76,11 @@
         <div class="viewer-tools">
           <label class="toggle"><input type="checkbox" id="tg-cloud" checked /> Point cloud</label>
           <label class="toggle"><input type="checkbox" id="tg-plan" checked /> Model</label>
+          <select id="sel-clip" aria-label="Potongan tinggi">
+            <option value="">Potong: tidak</option>
+            <option value="2.6">Potong: di bawah plafon</option>
+            <option value="1.4">Potong: denah (1,4 m)</option>
+          </select>
           <select id="sel-color" aria-label="Mode warna model">
             <option value="status">Warna: status</option>
             <option value="original">Warna: asli</option>
@@ -85,10 +92,11 @@
         <div class="viewer-empty" id="viewer-msg">Memuat model rencana…</div>
       </div>
       <ul class="legend" aria-label="Keterangan status">
-        <li><span class="chip done">✓ Terpasang</span></li>
-        <li><span class="chip partial">◐ Sebagian</span></li>
+        <li><span class="chip done">✓ Selesai</span></li>
+        <li><span class="chip partial">◐ Dikerjakan</span></li>
         <li><span class="chip none">○ Belum</span></li>
-        <li class="legend-hint">Klik elemen di model untuk melihat detail</li>
+        <li><span class="chip existing">▢ Eksisting mall</span></li>
+        <li class="legend-hint">Klik pekerjaan di model untuk detail &amp; foto</li>
       </ul>
     </section>
 
@@ -99,26 +107,26 @@
     </aside>
 
     <section class="card chart-card">
-      <div class="card-head"><h2>Progress keseluruhan per scan</h2></div>
+      <div class="card-head"><h2>Kurva S: aktual vs rencana</h2></div>
       <div class="chart" id="chart"></div>
-      <p class="fine">Progress = rata-rata status elemen (terpasang 100%, sebagian 50%, belum 0%). Klik titik untuk membuka scan.</p>
+      <p class="fine">Progress = Σ bobot × status (selesai 100%, dikerjakan 50%, belum 0%). Klik titik untuk membuka scan.</p>
     </section>
 
     <section class="card table-card">
-      <div class="card-head"><h2>Status elemen per scan</h2></div>
+      <div class="card-head"><h2>Status pekerjaan per scan</h2></div>
       <div class="table-wrap" id="matrix"></div>
     </section>
 
     <section class="card help-card">
-      <h2>Cara pakai dengan iPhone</h2>
+      <h2>Alur kerja mingguan dengan iPhone</h2>
       <ol class="steps">
-        <li><strong>Scan dengan LiDAR.</strong> Pakai iPhone/iPad Pro dengan LiDAR dan app scanner (mis. 3d Scanner App, Polycam, Scaniverse, atau app open-source seperti ARKit-Scanner). Scan area kerja termasuk lantai di sekitarnya.</li>
-        <li><strong>Ekspor</strong> sebagai <code>PLY</code> (point cloud), <code>OBJ</code>, atau <code>GLB</code> dalam satuan meter, lalu simpan ke Files.</li>
-        <li><strong>Tambah scan</strong> di halaman ini, pilih file tadi, dan foto lapangan dengan kamera iPhone (tombol <em>Kamera</em>).</li>
-        <li>Scan otomatis <strong>diselaraskan</strong> ke model rencana (rotasi sumbu vertikal + geser). Kalau meleset, atur manual lalu tekan <em>Sempurnakan</em>.</li>
-        <li>Tiap elemen dinilai dari berapa persen permukaannya tertutup titik scan. Status bisa dikoreksi manual per elemen.</li>
+        <li><strong>Model rencana.</strong> Ekspor desain fit-out dari SketchUp (Collada <code>.dae</code> / OBJ), Revit (FBX/OBJ), atau GLB. Nama grup = nama pekerjaan, grup induk = kategori. Grup bernama "Eksisting"/"Shell"/"Kolom" dianggap bangunan mall: jadi acuan, tidak dihitung.</li>
+        <li><strong>Scan LiDAR seminggu sekali.</strong> iPhone/iPad Pro + app scanner (3d Scanner App, Polycam, Scaniverse, dll.). Jalan pelan keliling unit, arahkan juga ke plafon. Ekspor <code>PLY</code>/<code>OBJ</code>/<code>GLB</code> (meter).</li>
+        <li><strong>Tambah scan</strong> di sini. Scan pertama diselaraskan ke model (cek, atur manual bila perlu); scan berikutnya otomatis memakai scan sebelumnya sebagai acuan. Koridor mall di luar unit dibuang.</li>
+        <li><strong>Foto dengan kamera iPhone</strong> untuk pekerjaan yang tidak terbaca LiDAR: cat, keramik, wallpaper, kaca. Pilih pekerjaannya dulu, lalu tekan <em>Kamera</em>: foto ditandai ke pekerjaan itu dan statusnya diisi manual.</li>
+        <li><strong>Laporan</strong>: kurva S aktual vs rencana, tabel per kategori, ekspor CSV, atau cetak ke PDF untuk laporan mingguan ke pengelola mall / owner.</li>
       </ol>
-      <p class="fine">Semua data disimpan di browser perangkat ini (IndexedDB), tidak diunggah ke server. Pakai <em>Ekspor proyek</em> untuk backup atau pindah perangkat. Akurasi LiDAR iPhone sekitar 1–2 cm: cukup untuk progress per elemen, bukan untuk survey presisi.</p>
+      <p class="fine">Semua data disimpan di browser perangkat ini (IndexedDB), tidak diunggah ke server. Pakai <em>Ekspor proyek</em> untuk backup atau pindah perangkat. Akurasi LiDAR iPhone ±1–2 cm (jangkauan ±5 m): cukup untuk status per pekerjaan, bukan untuk survey presisi. Pekerjaan yang tertutup (mis. ducting di atas plafon) tetap dihitung selesai setelah sekali terdeteksi.</p>
     </section>
   </main>
 
@@ -127,13 +135,13 @@
       <h2>Tambah scan</h2>
       <label class="field">File scan LiDAR
         <input type="file" id="add-file" required />
-        <span class="hint">PLY, OBJ, GLB/GLTF, atau XYZ/PTS/CSV (x y z [r g b])</span>
+        <span class="hint">PLY, OBJ, GLB/GLTF, atau XYZ/PTS/CSV (x y z [r g b]). Titik di-voxel 2 cm.</span>
       </label>
       <div class="row">
         <label class="field">Tanggal scan <input type="date" id="add-date" required /></label>
-        <label class="field">Label <input type="text" id="add-label" placeholder="mis. Minggu 4" maxlength="60" /></label>
+        <label class="field">Label <input type="text" id="add-label" placeholder="mis. Minggu 6" maxlength="60" /></label>
       </div>
-      <label class="field">Catatan <textarea id="add-note" rows="2" maxlength="500" placeholder="Kondisi lapangan, kendala, dsb."></textarea></label>
+      <label class="field">Catatan <textarea id="add-note" rows="2" maxlength="800" placeholder="Kondisi lapangan, kendala, koordinasi dengan mall…"></textarea></label>
       <div class="row">
         <label class="field">Satuan file
           <select id="add-unit">
@@ -160,19 +168,77 @@
     </form>
   </dialog>
 
+  <dialog id="dlg-plan" class="dialog">
+    <form method="dialog" id="form-plan">
+      <h2>Model rencana</h2>
+      <label class="field">File desain 3D
+        <input type="file" id="plan-file" />
+        <span class="hint">SketchUp: File → Export → 3D Model → Collada (.dae) atau OBJ. Revit: FBX/OBJ. Juga GLB/GLTF. Satuan mm/cm dikenali otomatis.</span>
+      </label>
+      <label class="field check" style="padding-top:0"><input type="checkbox" id="plan-zup" /> Model miring/terbaring? Centang: sumbu Z ke atas</label>
+      <p class="hint">Susun model per grup: <em>Kategori → Pekerjaan</em> (mis. "Partisi" → "Partisi dapur 1"). Grup "Eksisting", "Shell", "Struktur", atau "Kolom" = bangunan mall. Nama mengandung cat/keramik/kaca/wallpaper otomatis dinilai dari foto.</p>
+      <div class="dialog-actions">
+        <button class="btn" value="demo-plan" type="submit" formnovalidate>Pakai model contoh</button>
+        <span style="flex:1"></span>
+        <button class="btn" value="cancel" type="submit" formnovalidate>Batal</button>
+        <button class="btn primary" value="ok" type="submit">Muat</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-elements" class="dialog wide">
+    <form method="dialog" id="form-elements">
+      <h2>Pekerjaan &amp; bobot</h2>
+      <p class="hint">Bobot dipakai untuk progress (mis. dari RAB/BOQ). Eksisting = bangunan mall (acuan, tidak dihitung). Dari foto = dinilai manual karena tidak terbaca LiDAR.</p>
+      <div class="dialog-tools">
+        <button class="btn small" type="button" id="el-equal">Bobot sama</button>
+        <button class="btn small" type="button" id="el-area">Bobot = luas permukaan</button>
+      </div>
+      <div class="table-wrap dialog-scroll" id="el-table"></div>
+      <div class="dialog-actions">
+        <button class="btn" value="cancel" type="submit" formnovalidate>Batal</button>
+        <button class="btn primary" value="ok" type="submit">Simpan</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-schedule" class="dialog">
+    <form method="dialog" id="form-schedule">
+      <h2>Jadwal rencana (kurva S)</h2>
+      <div class="row">
+        <label class="field">Mulai fit-out <input type="date" id="sched-start" /></label>
+        <label class="field">Target opening <input type="date" id="sched-end" /></label>
+      </div>
+      <div class="dialog-tools">
+        <button class="btn small" type="button" id="sched-gen">Buat kurva S standar</button>
+        <button class="btn small" type="button" id="sched-add">+ Baris</button>
+      </div>
+      <div class="table-wrap dialog-scroll">
+        <table class="matrix cfg"><thead><tr><th>Tanggal</th><th>Target kumulatif %</th><th></th></tr></thead><tbody id="sched-rows"></tbody></table>
+      </div>
+      <div class="dialog-actions">
+        <button class="btn danger" value="clear" type="submit" formnovalidate>Hapus jadwal</button>
+        <span style="flex:1"></span>
+        <button class="btn" value="cancel" type="submit" formnovalidate>Batal</button>
+        <button class="btn primary" value="ok" type="submit">Simpan</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="dlg-settings" class="dialog">
     <form method="dialog" id="form-settings">
       <h2>Pengaturan analisis</h2>
       <label class="field">Nama proyek <input type="text" id="set-name" maxlength="80" /></label>
       <label class="field">Toleransi jarak (cm)
         <input type="number" id="set-tol" min="0.5" max="10" step="0.5" />
-        <span class="hint">Titik scan dalam jarak ini dari permukaan elemen dianggap mengenai elemen. LiDAR iPhone: 2 cm.</span>
+        <span class="hint">Titik scan dalam jarak ini dari permukaan pekerjaan dianggap mengenai pekerjaan. Ruangan dengan LiDAR iPhone: 3 cm.</span>
       </label>
       <div class="row">
-        <label class="field">Batas "terpasang" (%) <input type="number" id="set-done" min="1" max="100" step="1" /></label>
-        <label class="field">Batas "sebagian" (%) <input type="number" id="set-partial" min="0" max="100" step="1" /></label>
+        <label class="field">Batas "selesai" (%) <input type="number" id="set-done" min="1" max="100" step="1" /></label>
+        <label class="field">Batas "dikerjakan" (%) <input type="number" id="set-partial" min="0" max="100" step="1" /></label>
       </div>
-      <p class="hint">Persentase = bagian permukaan elemen yang tertutup titik scan. Panel yang ter-scan dari satu sisi saja sekitar 40–50%.</p>
+      <p class="hint">Persentase = bagian permukaan pekerjaan yang tertutup titik scan. Panel/dinding yang ter-scan dari satu sisi sekitar 40–50%.</p>
+      <label class="field check" style="padding-top:0"><input type="checkbox" id="set-keep" /> Status tidak turun antar scan (pekerjaan yang tertutup, mis. ducting di atas plafon, tetap selesai)</label>
       <div class="dialog-actions">
         <button class="btn" value="cancel" formnovalidate type="submit">Batal</button>
         <button class="btn primary" value="ok" type="submit">Simpan</button>
@@ -191,7 +257,6 @@
     </form>
   </dialog>
 
-  <input type="file" id="file-plan" accept=".glb,.gltf" hidden />
   <input type="file" id="file-import" accept=".json,application/json" hidden />
   <input type="file" id="file-camera" accept="image/*" capture="environment" hidden />
   <input type="file" id="file-photos" accept="image/*" multiple hidden />

@@ -1,23 +1,67 @@
-// Data demo: scan sintetis yang meniru ekspor LiDAR iPhone (lantai, dinding, benda lain,
-// noise ±3 mm, dan frame koordinat ARKit yang acak). Scan ini lewat pipeline yang sama
-// dengan file asli (auto-align -> coverage), jadi demo sekaligus menguji alur analisis.
+// Data demo fit-out restoran: 5 scan mingguan sintetis yang meniru ekspor LiDAR iPhone
+// (kepadatan seragam ±500 titik/m², noise ±3 mm, frame koordinat ARKit acak, koridor mall,
+// tumpukan material, dan plafon yang menutupi ducting di atasnya). Scan ini lewat pipeline
+// yang sama dengan file asli (penyelarasan → coverage), jadi demo sekaligus menguji analisis.
 import { sampleMeshes, seededRandom } from './viewer.js';
 import { invertTransformPoints } from './analysis.js';
+import { UNIT, DEMO_WEIGHTS } from './demo-plan.js';
 
-function rng(seed) {
-  let s = seed % 2147483647;
-  return () => (s = (s * 16807) % 2147483647) / 2147483647;
-}
+const DENSITY = 500; // titik per m²
 
-function isoDaysAgo(days) {
+function isoDaysFromToday(days) {
   const d = new Date();
-  d.setDate(d.getDate() - days);
-  return d.toISOString().slice(0, 10);
+  d.setDate(d.getDate() + days);
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 }
 
-/** Ambil hanya bagian awal elemen (sepanjang sumbu terpanjangnya) untuk meniru pemasangan sebagian. */
+/** Urutan kerja fit-out: elemen yang selesai / sedang dikerjakan di tiap scan. */
+const STAGES = [
+  { day: -28, label: 'Minggu 1', full: [], partial: ['Ducting AC utama', 'Partisi dapur 1'] },
+  {
+    day: -21, label: 'Minggu 2',
+    full: ['Ducting AC utama', 'Ducting exhaust dapur', 'Partisi dapur 1', 'Partisi dapur 2', 'Partisi dapur sisi kanan'],
+    partial: ['Partisi toilet tengah', 'Rangka shopfront'],
+  },
+  {
+    day: -14, label: 'Minggu 3',
+    full: ['Partisi toilet tengah', 'Partisi toilet depan', 'Rangka shopfront', 'Plafon dapur', 'Lantai panggung kayu'],
+    partial: ['Plafon dining zona A', 'Bar counter'],
+  },
+  {
+    day: -7, label: 'Minggu 4',
+    full: ['Plafon dining zona A', 'Plafon toilet', 'Bar counter', 'Kitchen hood', 'Meja masak (cooking line)'],
+    partial: ['Plafon dining zona B', 'Back bar kabinet', 'Signage box'],
+  },
+  {
+    day: -1, label: 'Minggu 5',
+    full: ['Plafon dining zona B', 'Back bar kabinet', 'Meja prep stainless', 'Chiller', 'Signage box'],
+    partial: ['Booth seating'],
+  },
+];
+
+/** Status pekerjaan finishing yang diisi manual dari foto (tidak terdeteksi LiDAR). */
+const MANUAL = [
+  {},
+  {},
+  { 'Keramik lantai dining': 'partial' },
+  { 'Keramik lantai dining': 'done', 'Cat plafon dining': 'partial' },
+  { 'Kaca shopfront': 'partial' },
+];
+
+/** Kurva S rencana (target progress kumulatif per tanggal, relatif terhadap hari ini). */
+export function demoSchedule() {
+  return [[-35, 0], [-28, 0.08], [-21, 0.22], [-14, 0.42], [-7, 0.65], [0, 0.85], [7, 0.97], [10, 1]]
+    .map(([d, target]) => ({ date: isoDaysFromToday(d), target }));
+}
+
+export function demoElementConfig(elements) {
+  const cfg = {};
+  for (const e of elements) if (DEMO_WEIGHTS[e.label] != null) cfg[e.key] = { weight: DEMO_WEIGHTS[e.label] };
+  return cfg;
+}
+
 function partialCut(points, fraction) {
-  let min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
   for (let i = 0; i < points.length; i += 3) for (let k = 0; k < 3; k++) {
     min[k] = Math.min(min[k], points[i + k]);
     max[k] = Math.max(max[k], points[i + k]);
@@ -30,86 +74,90 @@ function partialCut(points, fraction) {
   return out;
 }
 
-function centerY(points) {
-  let s = 0;
-  for (let i = 1; i < points.length; i += 3) s += points[i];
-  return s / (points.length / 3);
-}
-
-/**
- * Rencana pemasangan demo: elemen dipasang dari bawah ke atas (urut titik tengah Y).
- * Tiap tahap menambah elemen, dengan satu elemen "sebagian" (15%) kecuali tahap terakhir.
- */
-function demoStages(elements) {
-  const order = [...elements].sort((a, b) => centerY(a.samples) - centerY(b.samples)).map((e) => e.key);
-  const n = order.length;
-  const a = Math.max(1, Math.round(n * 0.34));
-  const b = Math.max(a + 1, Math.round(n * 0.67));
-  const stage = (full, partial) => ({ full: order.slice(0, full), partial: partial < n ? [order[partial]] : [] });
-  return [stage(a, a), stage(b, b), stage(n, n)];
-}
+const CAT_COLOR = {
+  MEP: [150, 165, 185], Partisi: [225, 220, 205], Plafon: [240, 238, 232], Fasad: [95, 105, 115],
+  'Bar & Dapur': [176, 138, 100], Interior: [168, 116, 79], Finishing: [215, 200, 170],
+};
 
 export function generateDemoScans(elements, seed = 42) {
-  const rnd = rng(seed);
-  const stages = demoStages(elements);
-  const nameOf = (k) => elements.find((e) => e.key === k)?.label ?? k;
-  // Batas model untuk menaruh lantai & dinding
-  let min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
-  for (const el of elements) for (let i = 0; i < el.samples.length; i += 3) for (let k = 0; k < 3; k++) {
-    min[k] = Math.min(min[k], el.samples[i + k]);
-    max[k] = Math.max(max[k], el.samples[i + k]);
-  }
-  const labels = ['Minggu 1', 'Minggu 2', 'Minggu 3'];
-  const days = [16, 9, 2];
+  const rnd = seededRandom(seed);
+  const byLabel = new Map(elements.map((e) => [e.label, e]));
+  const done = new Set();
 
-  return stages.map((st, si) => {
+  return STAGES.map((st, si) => {
+    st.full.forEach((n) => done.add(n));
     const pts = [];
     const cols = [];
-    const wood = (v) => [196 + v * 30, 150 + v * 25, 105 + v * 20];
     const push = (x, y, z, c) => {
       pts.push(x + (rnd() - 0.5) * 0.006, y + (rnd() - 0.5) * 0.006, z + (rnd() - 0.5) * 0.006);
-      cols.push(...c);
+      const v = (rnd() - 0.5) * 24;
+      cols.push(c[0] + v, c[1] + v, c[2] + v);
     };
-    const DENSITY = 4000; // titik per m², seragam untuk elemen dan lingkungan (seperti LiDAR)
+    // Plafon yang sudah terpasang menutupi semua yang ada di atasnya (ducting, slab atas).
+    const ceilings = elements.filter((e) => e.category === 'Plafon' && done.has(e.label)).map((e) => {
+      const b = { x0: Infinity, x1: -Infinity, z0: Infinity, z1: -Infinity, y: -Infinity };
+      for (let i = 0; i < e.samples.length; i += 3) {
+        b.x0 = Math.min(b.x0, e.samples[i]); b.x1 = Math.max(b.x1, e.samples[i]);
+        b.z0 = Math.min(b.z0, e.samples[i + 2]); b.z1 = Math.max(b.z1, e.samples[i + 2]);
+        b.y = Math.max(b.y, e.samples[i + 1]);
+      }
+      return b;
+    });
+    // (hanya bagian dalam: tepi 20 cm dibiarkan, mis. signage di luar garis shopfront)
+    const hidden = (x, y, z) => ceilings.some((b) => x > b.x0 + 0.2 && x < b.x1 - 0.2 && z > b.z0 + 0.2 && z < b.z1 - 0.2 && y > b.y + 0.02);
+    const inside = (x, y, z) => x >= -0.01 && x <= UNIT.x1 + 0.01 && z >= -0.01 && z <= UNIT.z1 + 0.05 &&
+      y >= -0.01 && y <= UNIT.height + 0.01;
+
     for (const el of elements) {
-      const full = st.full.includes(el.key);
-      const part = st.partial.includes(el.key);
-      if (!full && !part) continue;
-      const count = Math.max(300, Math.round(el.area * DENSITY));
-      let p = Array.from(sampleMeshes(el.meshes, count, { random: seededRandom(seed * 31 + si * 7 + el.order) }).points);
-      if (part) p = partialCut(p, 0.2);
-      for (let i = 0; i < p.length; i += 3) push(p[i], p[i + 1], p[i + 2], wood(rnd() - 0.5));
+      const isFull = el.existing || done.has(el.label);
+      const isPart = !isFull && st.partial.includes(el.label);
+      if ((!isFull && !isPart) || el.manual) continue; // finishing tidak punya bentuk yang terbaca LiDAR
+      const count = Math.max(200, Math.round(el.area * DENSITY));
+      const rand = seededRandom(seed * 31 + si * 7 + Math.round(el.area * 1000));
+      let p = Array.from(sampleMeshes(el.meshes, count, { random: rand }).points);
+      if (isPart) p = partialCut(p, 0.2);
+      const c = el.existing ? [170, 168, 160] : CAT_COLOR[el.category] ?? [200, 200, 200];
+      for (let i = 0; i < p.length; i += 3) {
+        const x = p[i], y = p[i + 1], z = p[i + 2];
+        if (el.existing && !inside(x, y, z)) continue; // sisi luar shell tidak terlihat dari dalam unit
+        if (hidden(x, y, z)) continue;
+        push(x, y, z, c);
+      }
     }
-    // Sudut workshop: lantai, dinding belakang (3 cm di belakang kabinet), dinding samping,
-    // dan barang di lantai.
-    const floorY = min[1];
-    const x0 = min[0] - 0.45, x1 = max[0] + 1.6;
-    const z0 = min[2] - 0.03, z1 = max[2] + 1.8;
-    const rect = (n, f) => { for (let i = 0; i < n; i++) f(rnd(), rnd()); };
-    rect(Math.round((x1 - x0) * (z1 - z0) * DENSITY), (u, v) => {
-      const g = 120 + rnd() * 30;
-      push(x0 + u * (x1 - x0), floorY, z0 + v * (z1 - z0), [g, g, g - 5]);
-    });
-    rect(Math.round((x1 - x0) * 2.4 * DENSITY), (u, v) => {
-      const g = 220 + rnd() * 20;
-      push(x0 + u * (x1 - x0), floorY + v * 2.4, z0, [g, g - 4, g - 10]);
-    });
-    rect(Math.round((z1 - z0) * 2.4 * DENSITY), (u, v) => {
-      const g = 205 + rnd() * 20;
-      push(x0, floorY + v * 2.4, z0 + u * (z1 - z0), [g, g - 6, g - 14]);
-    });
-    rect(3000, (u, v) => push(max[0] + 0.5 + u * 0.4, floorY + v * 0.45, max[2] + 0.4 + rnd() * 0.4, [160, 120, 70]));
-    rect(2000, (u, v) => push(x0 + 0.05 + u * 0.25, floorY + v * 0.6, max[2] + 0.9 + rnd() * 0.3, [90, 110, 140]));
-    // Frame ARKit acak: sesi scan berbeda = origin & arah berbeda
-    const truth = { yaw: rnd() * Math.PI * 2, tx: (rnd() - 0.5) * 4, ty: -1.2 - rnd() * 0.3, tz: (rnd() - 0.5) * 4 };
-    const raw = invertTransformPoints(new Float32Array(pts), truth);
+    // Koridor mall di depan shopfront + toko seberang (nanti dibuang oleh crop).
+    for (let i = 0; i < 20 * 5 * DENSITY * 0.5; i++) push(-2 + rnd() * 20, 0, 12 + rnd() * 5, [205, 200, 190]);
+    for (let i = 0; i < 20 * 4.5 * DENSITY * 0.5; i++) push(-2 + rnd() * 20, rnd() * 4.5, 17, [120, 130, 140]);
+    // Tumpukan material / perancah, berpindah tiap minggu.
+    for (let b = 0; b < 4; b++) {
+      const x = 1 + rnd() * 13, z = 4.8 + rnd() * 6, w = 0.6 + rnd() * 0.8, h = 0.4 + rnd() * 1.2;
+      for (let i = 0; i < 1500; i++) {
+        const f = Math.floor(rnd() * 5);
+        const u = rnd(), v = rnd();
+        const c = [190, 160, 110];
+        if (f === 0) push(x + u * w, h, z + v * w, c);
+        else if (f === 1) push(x, v * h, z + u * w, c);
+        else if (f === 2) push(x + w, v * h, z + u * w, c);
+        else if (f === 3) push(x + u * w, v * h, z, c);
+        else push(x + u * w, v * h, z + w, c);
+      }
+    }
+    // Frame ARKit acak: tiap sesi scan punya origin & arah sendiri.
+    const truth = { yaw: rnd() * Math.PI * 2, tx: (rnd() - 0.5) * 6, ty: -1.3 - rnd() * 0.3, tz: (rnd() - 0.5) * 6 };
+    const overrides = {};
+    for (const [name, status] of Object.entries(MANUAL[si])) {
+      const el = byLabel.get(name);
+      if (el) overrides[el.key] = status;
+    }
     return {
-      date: isoDaysAgo(days[si]),
-      label: labels[si],
-      note: `Data demo. Dipasang: ${st.full.map(nameOf).join(', ')}.` +
-        (st.partial.length ? ` Sedang dipasang: ${st.partial.map(nameOf).join(', ')}.` : ''),
-      points: raw,
+      date: isoDaysFromToday(st.day),
+      label: st.label,
+      note: `Data demo. Selesai minggu ini: ${st.full.join(', ') || '–'}.` +
+        (st.partial.length ? ` Sedang dikerjakan: ${st.partial.join(', ')}.` : ''),
+      points: invertTransformPoints(new Float32Array(pts), truth),
       colors: Uint8Array.from(cols, (c) => Math.max(0, Math.min(255, c))),
+      overrides,
+      expected: { full: [...done], partial: st.partial }, // untuk pengujian
+      truth, // pose sebenarnya (frame ARKit → model), untuk pengujian
       demo: true,
     };
   });

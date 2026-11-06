@@ -68,12 +68,14 @@ function fromBase64(str) {
   return out;
 }
 
-export function serializeProject({ settings, scans, planName }) {
+export function serializeProject({ settings, scans, planName, elementConfig = {}, schedule = [] }) {
   return JSON.stringify({
     format: 'progress-tracker/v1',
     exportedAt: new Date().toISOString(),
     planName,
     settings,
+    elementConfig,
+    schedule,
     scans: scans.map((s) => ({
       ...s,
       points: toBase64(new Uint8Array(s.points.buffer, s.points.byteOffset, s.points.byteLength)),

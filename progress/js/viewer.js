@@ -7,7 +7,7 @@ import { MeshSurfaceSampler } from 'three/addons/math/MeshSurfaceSampler.js';
 const GENERIC_NAME = /^(3dgeom|mesh|node|object|geometry|group|scene|primitive)[-_ ]?\d*$/i;
 
 // Warna status tetap (good / warning) + abu-abu untuk "belum".
-const STATUS_COLOR = { done: 0x0ca30c, partial: 0xfab219, none: 0x9a9893 };
+const STATUS_COLOR = { done: 0x0ca30c, partial: 0xfab219, none: 0x9a9893, existing: 0xbdbbb5 };
 
 function displayName(node) {
   return node.userData?.name || node.name || '';
@@ -78,18 +78,34 @@ export function sampleMeshes(meshes, count, { withColor = false, random = null }
   return { points: k < count ? out.subarray(0, k * 3) : out, colors, area: total };
 }
 
+// Shell mall / struktur eksisting: selalu ada, jadi acuan penyelarasan tapi tidak dihitung progress.
+export const EXISTING_RE = /eksis|exist|shell|struktur|structur|kolom|column|bangunan|base ?build/i;
+// Pekerjaan finishing yang tidak terlihat bentuknya oleh LiDAR (beda < 2 cm atau tembus laser):
+// dinilai manual dengan bukti foto kamera.
+export const MANUAL_RE = /\bcat\b|keramik|granit|\btile|wallpaper|finish|kaca|glass|vinyl|karpet|carpet|plester|coating/i;
+
+function namedAncestor(node, root) {
+  let n = node;
+  while (n && n !== root && (!displayName(n) || GENERIC_NAME.test(displayName(n)))) n = n.parent;
+  return n && n !== root ? n : null;
+}
+
+function cleanLabel(raw) {
+  const m = raw.match(/^\[(\d+)\]\s*(.*)$/);
+  return { label: m ? `${m[1]} · ${m[2] || raw}` : raw.replace(/_/g, ' '), order: m ? Number(m[1]) : null };
+}
+
 /**
- * Pecah model rencana menjadi elemen. Satu elemen = node bernama terdekat
- * (mis. "[1]TOP") di atas mesh; mesh tanpa nama spesifik digabung ke induknya.
+ * Pecah model rencana menjadi elemen. Satu elemen = node bernama terdekat di atas mesh
+ * (grup/komponen SketchUp, objek Revit, dll.); mesh tanpa nama spesifik digabung ke induknya.
+ * Kategori = node bernama berikutnya di atasnya (mis. "Partisi", "Plafon").
  */
 export function extractElements(root) {
   root.updateMatrixWorld(true);
   const groups = new Map();
   root.traverse((obj) => {
     if (!obj.isMesh) return;
-    let node = obj;
-    while (node && node !== root && (!displayName(node) || GENERIC_NAME.test(displayName(node)))) node = node.parent;
-    if (!node || node === root) node = obj;
+    const node = namedAncestor(obj, root) ?? obj;
     if (!groups.has(node)) groups.set(node, []);
     groups.get(node).push(obj);
   });
@@ -97,20 +113,30 @@ export function extractElements(root) {
   const elements = [];
   for (const [node, meshes] of groups) {
     const raw = displayName(node) || `Elemen ${elements.length + 1}`;
-    const m = raw.match(/^\[(\d+)\]\s*(.*)$/);
-    const label = m ? `${m[1]} · ${m[2] || raw}` : raw;
-    let key = raw;
-    const dup = used.get(raw) ?? 0;
-    used.set(raw, dup + 1);
-    if (dup) key = `${raw}#${dup + 1}`;
+    const { label, order } = cleanLabel(raw);
+    const catNode = node.parent ? namedAncestor(node.parent, root) : null;
+    const category = catNode ? cleanLabel(displayName(catNode)).label : 'Umum';
+    let key = catNode ? `${displayName(catNode)}/${raw}` : raw;
+    const dup = used.get(key) ?? 0;
+    used.set(key, dup + 1);
+    if (dup) key = `${key}#${dup + 1}`;
     const area = meshes.reduce((s, mesh) => s + worldArea(mesh), 0);
-    // Kepadatan sampel ±1 per 4 cm², dibatasi 200..1500 per elemen.
-    const count = Math.max(200, Math.min(1500, Math.round(area * 2500)));
+    // ±1 sampel per 25 cm² (min 200, maks 40.000 per elemen; slab/plafon besar jadi ±100/m²).
+    const count = Math.max(200, Math.min(40000, Math.round(area * 400)));
     // Seed dari nama elemen: sampel (dan coverage) identik setiap halaman dimuat.
     const { points } = sampleMeshes(meshes, count, { random: seededRandom(hashString(key)) });
-    elements.push({ key, label, meshes, area, samples: points, order: m ? Number(m[1]) : 1e6 + elements.length });
+    const text = `${category} ${raw}`;
+    elements.push({
+      key, label, category, meshes, area, samples: points,
+      existing: EXISTING_RE.test(text),
+      manual: !EXISTING_RE.test(text) && MANUAL_RE.test(text),
+      order: order ?? 1e6 + elements.length,
+    });
   }
-  elements.sort((a, b) => a.order - b.order);
+  // Urut per kategori (urutan kemunculan), lalu nomor/urutan di dalamnya.
+  const catOrder = new Map();
+  elements.forEach((e) => { if (!catOrder.has(e.category)) catOrder.set(e.category, catOrder.size); });
+  elements.sort((a, b) => catOrder.get(a.category) - catOrder.get(b.category) || a.order - b.order);
   return elements;
 }
 
@@ -170,14 +196,17 @@ export class Viewer {
     this.camera.updateProjectionMatrix();
   }
 
+  /** source: URL GLB, ArrayBuffer GLB, atau Object3D yang sudah jadi. */
   async loadPlan(source) {
-    const loader = new GLTFLoader();
-    const gltf = typeof source === 'string'
-      ? await loader.loadAsync(source)
-      : await loader.parseAsync(source, '');
+    let root;
+    if (source?.isObject3D) root = source;
+    else {
+      const loader = new GLTFLoader();
+      root = (typeof source === 'string' ? await loader.loadAsync(source) : await loader.parseAsync(source, '')).scene;
+    }
     if (this.planRoot) this.scene.remove(this.planRoot);
     this.select(null);
-    this.planRoot = gltf.scene;
+    this.planRoot = root;
     this.scene.add(this.planRoot);
     this.elements = extractElements(this.planRoot);
     for (const el of this.elements) {
@@ -201,11 +230,39 @@ export class Viewer {
     const size = box.getSize(new THREE.Vector3()).length();
     const center = box.getCenter(new THREE.Vector3());
     this.controls.target.copy(center);
-    this.camera.position.copy(center).add(new THREE.Vector3(0.9, 0.7, -1.1).multiplyScalar(size * 1.4));
+    const span0 = Math.max(box.max.x - box.min.x, box.max.z - box.min.z);
+    // Ruangan: lihat dari sisi depan (+Z, arah shopfront) agak dari atas; benda kecil: sudut 3/4.
+    const dir = span0 > 6 ? new THREE.Vector3(0.35, 0.95, 0.85).multiplyScalar(size * 0.75)
+      : new THREE.Vector3(0.9, 0.7, -1.1).multiplyScalar(size * 1.4);
+    // Layar sempit (iPhone portrait): mundurkan kamera supaya lebar ruangan tetap muat.
+    dir.multiplyScalar(Math.max(1, 1.25 / Math.max(0.3, this.camera.aspect)));
+    this.camera.position.copy(center).add(dir);
     this.camera.near = size / 100;
     this.camera.far = size * 200;
     this.camera.updateProjectionMatrix();
     this.grid.position.y = box.min.y;
+    // Grid lantai mengikuti ukuran model (sel 50 cm untuk ruangan, 10 cm untuk benda kecil).
+    const span = Math.max(box.max.x - box.min.x, box.max.z - box.min.z);
+    const step = span > 6 ? 0.5 : 0.1;
+    const cells = Math.ceil((span * 1.6) / step / 2) * 2;
+    this.scene.remove(this.grid);
+    this.grid.geometry.dispose();
+    this.grid = new THREE.GridHelper(cells * step, cells, 0x888888, 0xbbbbbb);
+    this.grid.material.transparent = true;
+    this.grid.material.opacity = 0.35;
+    this.grid.position.set(center.x, box.min.y, center.z);
+    this.scene.add(this.grid);
+    this.floorY = box.min.y;
+    this.modelHeight = box.max.y - box.min.y;
+    this.setClipHeight(this.clipHeight ?? null);
+  }
+
+  /** Sembunyikan semua yang lebih tinggi dari `h` meter di atas lantai (null = tanpa potongan). */
+  setClipHeight(h) {
+    this.clipHeight = h;
+    this.renderer.clippingPlanes = h == null
+      ? []
+      : [new THREE.Plane(new THREE.Vector3(0, -1, 0), (this.floorY ?? 0) + h)];
   }
 
   /** statuses: key -> 'done' | 'partial' | 'none' */
@@ -242,7 +299,7 @@ export class Viewer {
 
   _applyMaterials() {
     for (const el of this.elements) {
-      const st = this.statuses?.[el.key] ?? 'none';
+      const st = el.existing ? 'existing' : this.statuses?.[el.key] ?? 'none';
       const selected = el.key === this.selectedKey;
       for (const mesh of el.meshes) {
         if (this.colorMode === 'original') {
@@ -251,8 +308,8 @@ export class Viewer {
         }
         const m = mesh.userData.statusMaterial;
         m.color.set(STATUS_COLOR[st]);
-        m.opacity = st === 'none' ? 0.22 : st === 'partial' ? 0.75 : 0.9;
-        m.depthWrite = st !== 'none';
+        m.opacity = { none: 0.22, partial: 0.75, done: 0.9, existing: 0.1 }[st];
+        m.depthWrite = st === 'done' || st === 'partial';
         mesh.material = m;
       }
     }

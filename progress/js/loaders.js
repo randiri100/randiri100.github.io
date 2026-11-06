@@ -6,18 +6,19 @@ import { PLYLoader } from 'three/addons/loaders/PLYLoader.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { sampleMeshes } from './viewer.js';
-import { subsample } from './analysis.js';
+import { subsample, voxelDownsample } from './analysis.js';
 
-export const MAX_POINTS = 300000;
+export const MAX_POINTS = 1500000; // setelah voxel 2 cm: cukup untuk ±300 m² permukaan
+export const VOXEL = 0.02;
 export const ACCEPT = '.ply,.obj,.glb,.gltf,.xyz,.pts,.txt,.csv';
 
-const MESH_DENSITY = 40000; // titik per m² permukaan mesh
+const MESH_DENSITY = 10000; // titik per m² permukaan mesh (lalu di-voxel 2 cm)
 
 function meshesToCloud(meshes) {
   let area = 0;
   // Hitung luas dulu via sampling 1 titik (sampleMeshes mengembalikan total luas).
   area = sampleMeshes(meshes, 1).area;
-  const count = Math.max(20000, Math.min(MAX_POINTS, Math.round(area * MESH_DENSITY)));
+  const count = Math.max(20000, Math.min(4000000, Math.round(area * MESH_DENSITY)));
   const { points, colors } = sampleMeshes(meshes, count, { withColor: true });
   const hasAnyColor = meshes.some((m) => m.geometry.attributes.color || m.material?.color);
   return { points, colors: hasAnyColor ? colors : null };
@@ -124,6 +125,61 @@ export async function loadScanFile(file, opts = {}) {
   const scale = opts.unitScale ?? 1;
   if (scale !== 1) points = points.map((v) => v * scale);
   if (opts.zUp) points = zUpToYUp(points);
+  ({ points, colors } = subsample(points, 6000000, colors)); // batas memori sebelum voxel
+  ({ points, colors } = voxelDownsample(points, colors, VOXEL));
   ({ points, colors } = subsample(points, MAX_POINTS, colors));
   return { points, colors };
+}
+
+// ---------- Model rencana (desain fit-out) ----------
+
+export const PLAN_ACCEPT = '.glb,.gltf,.obj,.dae,.fbx';
+
+/**
+ * Muat model rencana dari ekspor SketchUp / Revit / dll. Nama grup/komponen menjadi nama
+ * elemen, dan grup induknya menjadi kategori.
+ * - DAE (SketchUp "Export 3D Model → Collada"): satuan & sumbu dibaca dari file.
+ * - OBJ / FBX: satuan ditebak dari ukuran (unit restoran > 100 berarti cm, > 1000 berarti mm).
+ * @param {File} file
+ * @param {{zUp?: boolean}} opts
+ * @returns {Promise<{root: THREE.Object3D, note: string}>}
+ */
+export async function loadPlanFile(file, opts = {}) {
+  const ext = file.name.split('.').pop().toLowerCase();
+  let root;
+  if (ext === 'glb' || ext === 'gltf') {
+    const data = ext === 'glb' ? await file.arrayBuffer() : await file.text();
+    root = (await new GLTFLoader().parseAsync(data, '')).scene;
+  } else if (ext === 'obj') {
+    root = new OBJLoader().parse(await file.text());
+  } else if (ext === 'dae') {
+    const { ColladaLoader } = await import('three/addons/loaders/ColladaLoader.js');
+    root = new ColladaLoader().parse(await file.text(), '').scene;
+  } else if (ext === 'fbx') {
+    const { FBXLoader } = await import('three/addons/loaders/FBXLoader.js');
+    root = new FBXLoader().parse(await file.arrayBuffer(), '');
+  } else {
+    throw new Error(`Format .${ext} belum didukung untuk model rencana. Pakai GLB, OBJ, DAE, atau FBX.`);
+  }
+  const wrap = new THREE.Group();
+  wrap.name = '';
+  wrap.add(root);
+  if (opts.zUp) root.rotation.x = -Math.PI / 2;
+  wrap.updateMatrixWorld(true);
+  let box = new THREE.Box3().setFromObject(wrap);
+  const size = box.getSize(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z);
+  let unit = 'meter';
+  if (ext !== 'dae' && ext !== 'glb' && ext !== 'gltf') {
+    if (maxDim > 1000) { wrap.scale.setScalar(0.001); unit = 'milimeter'; }
+    else if (maxDim > 100) { wrap.scale.setScalar(0.01); unit = 'sentimeter'; }
+  }
+  wrap.updateMatrixWorld(true);
+  box = new THREE.Box3().setFromObject(wrap);
+  const s = box.getSize(new THREE.Vector3());
+  // Posisi model tidak digeser: revisi model dari sumber yang sama tetap sejajar dengan scan lama.
+  return {
+    root: wrap,
+    note: `satuan dibaca sebagai ${unit}, ukuran ${s.x.toFixed(1)} × ${s.z.toFixed(1)} m, tinggi ${s.y.toFixed(1)} m`,
+  };
 }
