@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Progress Tracker</title>
+  <meta name="description" content="Pantau progress pemasangan dari scan LiDAR dan foto kamera iPhone, dibandingkan dengan model rencana 3D." />
+  <meta name="theme-color" content="#f6f5f2" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#161615" media="(prefers-color-scheme: dark)" />
+  <link rel="stylesheet" href="style.css" />
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <h1 id="project-name">Progress Tracker</h1>
+      <p class="sub">Scan LiDAR + foto iPhone dibandingkan dengan model rencana <span id="plan-name"></span></p>
+    </div>
+    <div class="top-actions">
+      <button id="btn-add" class="btn primary" type="button">+ Tambah scan</button>
+      <details class="menu">
+        <summary class="btn" aria-label="Menu lainnya">Menu</summary>
+        <div class="menu-list" role="menu">
+          <button type="button" data-action="demo" role="menuitem">Muat data demo</button>
+          <button type="button" data-action="settings" role="menuitem">Pengaturan analisis…</button>
+          <button type="button" data-action="plan" role="menuitem">Ganti model rencana (GLB)…</button>
+          <button type="button" data-action="plan-reset" role="menuitem">Pakai model bawaan</button>
+          <hr />
+          <button type="button" data-action="export" role="menuitem">Ekspor proyek (.json)</button>
+          <button type="button" data-action="import" role="menuitem">Impor proyek…</button>
+          <button type="button" data-action="csv" role="menuitem">Ekspor tabel (.csv)</button>
+          <button type="button" data-action="print" role="menuitem">Cetak / simpan PDF</button>
+          <hr />
+          <button type="button" data-action="clear" role="menuitem" class="danger">Hapus semua scan</button>
+        </div>
+      </details>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="kpis" aria-label="Ringkasan">
+      <div class="kpi">
+        <span class="kpi-label">Progress terakhir</span>
+        <span class="kpi-value" id="kpi-progress">–</span>
+        <span class="kpi-note" id="kpi-delta">&nbsp;</span>
+      </div>
+      <div class="kpi">
+        <span class="kpi-label">Elemen terpasang</span>
+        <span class="kpi-value" id="kpi-done">–</span>
+        <span class="kpi-note" id="kpi-partial">&nbsp;</span>
+      </div>
+      <div class="kpi">
+        <span class="kpi-label">Scan terakhir</span>
+        <span class="kpi-value kpi-date" id="kpi-last">–</span>
+        <span class="kpi-note" id="kpi-count">&nbsp;</span>
+      </div>
+      <div class="kpi">
+        <span class="kpi-label">Foto lapangan</span>
+        <span class="kpi-value" id="kpi-photos">–</span>
+        <span class="kpi-note">dari kamera iPhone</span>
+      </div>
+    </section>
+
+    <section class="card viewer-card">
+      <div class="card-head">
+        <div class="scan-tabs" id="scan-tabs" role="tablist" aria-label="Pilih scan"></div>
+        <div class="viewer-tools">
+          <label class="toggle"><input type="checkbox" id="tg-cloud" checked /> Point cloud</label>
+          <label class="toggle"><input type="checkbox" id="tg-plan" checked /> Model</label>
+          <select id="sel-color" aria-label="Mode warna model">
+            <option value="status">Warna: status</option>
+            <option value="original">Warna: asli</option>
+          </select>
+          <button class="btn small" type="button" id="btn-frame">Reset kamera</button>
+        </div>
+      </div>
+      <div class="viewer" id="viewer">
+        <div class="viewer-empty" id="viewer-msg">Memuat model rencana…</div>
+      </div>
+      <ul class="legend" aria-label="Keterangan status">
+        <li><span class="chip done">✓ Terpasang</span></li>
+        <li><span class="chip partial">◐ Sebagian</span></li>
+        <li><span class="chip none">○ Belum</span></li>
+        <li class="legend-hint">Klik elemen di model untuk melihat detail</li>
+      </ul>
+    </section>
+
+    <aside class="card side" id="side">
+      <div id="scan-detail" class="scan-detail">
+        <p class="empty">Pilih atau tambah scan.</p>
+      </div>
+    </aside>
+
+    <section class="card chart-card">
+      <div class="card-head"><h2>Progress keseluruhan per scan</h2></div>
+      <div class="chart" id="chart"></div>
+      <p class="fine">Progress = rata-rata status elemen (terpasang 100%, sebagian 50%, belum 0%). Klik titik untuk membuka scan.</p>
+    </section>
+
+    <section class="card table-card">
+      <div class="card-head"><h2>Status elemen per scan</h2></div>
+      <div class="table-wrap" id="matrix"></div>
+    </section>
+
+    <section class="card help-card">
+      <h2>Cara pakai dengan iPhone</h2>
+      <ol class="steps">
+        <li><strong>Scan dengan LiDAR.</strong> Pakai iPhone/iPad Pro dengan LiDAR dan app scanner (mis. 3d Scanner App, Polycam, Scaniverse, atau app open-source seperti ARKit-Scanner). Scan area kerja termasuk lantai di sekitarnya.</li>
+        <li><strong>Ekspor</strong> sebagai <code>PLY</code> (point cloud), <code>OBJ</code>, atau <code>GLB</code> dalam satuan meter, lalu simpan ke Files.</li>
+        <li><strong>Tambah scan</strong> di halaman ini, pilih file tadi, dan foto lapangan dengan kamera iPhone (tombol <em>Kamera</em>).</li>
+        <li>Scan otomatis <strong>diselaraskan</strong> ke model rencana (rotasi sumbu vertikal + geser). Kalau meleset, atur manual lalu tekan <em>Sempurnakan</em>.</li>
+        <li>Tiap elemen dinilai dari berapa persen permukaannya tertutup titik scan. Status bisa dikoreksi manual per elemen.</li>
+      </ol>
+      <p class="fine">Semua data disimpan di browser perangkat ini (IndexedDB), tidak diunggah ke server. Pakai <em>Ekspor proyek</em> untuk backup atau pindah perangkat. Akurasi LiDAR iPhone sekitar 1–2 cm: cukup untuk progress per elemen, bukan untuk survey presisi.</p>
+    </section>
+  </main>
+
+  <dialog id="dlg-add" class="dialog">
+    <form method="dialog" id="form-add">
+      <h2>Tambah scan</h2>
+      <label class="field">File scan LiDAR
+        <input type="file" id="add-file" required />
+        <span class="hint">PLY, OBJ, GLB/GLTF, atau XYZ/PTS/CSV (x y z [r g b])</span>
+      </label>
+      <div class="row">
+        <label class="field">Tanggal scan <input type="date" id="add-date" required /></label>
+        <label class="field">Label <input type="text" id="add-label" placeholder="mis. Minggu 4" maxlength="60" /></label>
+      </div>
+      <label class="field">Catatan <textarea id="add-note" rows="2" maxlength="500" placeholder="Kondisi lapangan, kendala, dsb."></textarea></label>
+      <div class="row">
+        <label class="field">Satuan file
+          <select id="add-unit">
+            <option value="1">Meter (ARKit, default)</option>
+            <option value="0.01">Sentimeter</option>
+            <option value="0.001">Milimeter</option>
+          </select>
+        </label>
+        <label class="field check"><input type="checkbox" id="add-zup" /> Sumbu Z ke atas (ekspor CAD/LAS)</label>
+      </div>
+      <fieldset class="field">
+        <legend>Foto lapangan (opsional)</legend>
+        <div class="photo-inputs">
+          <label class="btn small">📷 Kamera<input type="file" id="add-camera" accept="image/*" capture="environment" hidden /></label>
+          <label class="btn small">Pilih foto<input type="file" id="add-photos" accept="image/*" multiple hidden /></label>
+          <span class="hint" id="add-photo-count">0 foto</span>
+        </div>
+      </fieldset>
+      <p class="error" id="add-error" hidden></p>
+      <div class="dialog-actions">
+        <button class="btn" value="cancel" formnovalidate type="submit">Batal</button>
+        <button class="btn primary" value="ok" type="submit" id="add-submit">Proses scan</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-settings" class="dialog">
+    <form method="dialog" id="form-settings">
+      <h2>Pengaturan analisis</h2>
+      <label class="field">Nama proyek <input type="text" id="set-name" maxlength="80" /></label>
+      <label class="field">Toleransi jarak (cm)
+        <input type="number" id="set-tol" min="0.5" max="10" step="0.5" />
+        <span class="hint">Titik scan dalam jarak ini dari permukaan elemen dianggap mengenai elemen. LiDAR iPhone: 2 cm.</span>
+      </label>
+      <div class="row">
+        <label class="field">Batas "terpasang" (%) <input type="number" id="set-done" min="1" max="100" step="1" /></label>
+        <label class="field">Batas "sebagian" (%) <input type="number" id="set-partial" min="0" max="100" step="1" /></label>
+      </div>
+      <p class="hint">Persentase = bagian permukaan elemen yang tertutup titik scan. Panel yang ter-scan dari satu sisi saja sekitar 40–50%.</p>
+      <div class="dialog-actions">
+        <button class="btn" value="cancel" formnovalidate type="submit">Batal</button>
+        <button class="btn primary" value="ok" type="submit">Simpan</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-photo" class="dialog photo-dialog">
+    <form method="dialog">
+      <img id="photo-big" alt="" />
+      <p id="photo-caption" class="fine"></p>
+      <div class="dialog-actions">
+        <button class="btn danger" type="button" id="photo-delete">Hapus foto</button>
+        <button class="btn primary" value="close" type="submit">Tutup</button>
+      </div>
+    </form>
+  </dialog>
+
+  <input type="file" id="file-plan" accept=".glb,.gltf" hidden />
+  <input type="file" id="file-import" accept=".json,application/json" hidden />
+  <input type="file" id="file-camera" accept="image/*" capture="environment" hidden />
+  <input type="file" id="file-photos" accept="image/*" multiple hidden />
+
+  <div class="busy" id="busy" hidden><div class="spinner"></div><span id="busy-msg">Memproses…</span></div>
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
